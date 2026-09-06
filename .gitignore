@@ -1,0 +1,53 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Dependencies
+node_modules
+.pnpm-store
+
+# Production & Build outputs
+dist
+dist-ssr
+*.local
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Vite / Cache
+.vite
+.cache
+*.tsbuildinfo
+
+# Coverage & Tests
+coverage
+*.lcov
+
+# Editor & IDE files
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# VS Code (preserve extensions & shared settings for Tailwind v4)
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Operating System
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
