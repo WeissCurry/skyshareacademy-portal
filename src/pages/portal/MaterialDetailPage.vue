@@ -1,106 +1,218 @@
 <script setup lang="ts">
+import { ref, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { useRoute, useRouter } from "vue-router";
+import { apiClient } from "@/api/client";
 import AppBadge from "@/components/common/AppBadge.vue";
 import AppButton from "@/components/common/AppButton.vue";
+import AppAlert from "@/components/common/AppAlert.vue";
+import AppSkeleton from "@/components/common/AppSkeleton.vue";
+import AppPage from "@/components/common/AppPage.vue";
+import type { ExclusiveArticle } from "@/types";
+import { animatePageEntrance } from "@/utils/animations";
 
 const route = useRoute();
 const router = useRouter();
 
-const materialId = route.params.id;
+const containerRef = ref<HTMLElement | null>(null);
+const article = ref<ExclusiveArticle | null>(null);
+const isLoading = ref(true);
+const errorMessage = ref<string | null>(null);
+
+let entranceCtx: { revert: () => void } | null = null;
+
+const runEntrance = async () => {
+  await nextTick();
+  if (containerRef.value) {
+    entranceCtx?.revert();
+    entranceCtx = animatePageEntrance(containerRef.value, ".article-detail-module");
+  }
+};
+
+const loadArticle = async (id: number) => {
+  if (!id || isNaN(id)) {
+    errorMessage.value = "ID artikel tidak valid.";
+    isLoading.value = false;
+    article.value = null;
+    return;
+  }
+
+  isLoading.value = true;
+  errorMessage.value = null;
+
+  try {
+    const res = await apiClient.get<{
+      status: string;
+      data: ExclusiveArticle;
+    }>(`/portal/articles/${id}`);
+
+    article.value = res.data?.data || null;
+  } catch (err: any) {
+    errorMessage.value =
+      err.response?.data?.message ||
+      err.message ||
+      "Gagal memuat artikel atau Anda belum terdaftar aktif pada program ini.";
+    article.value = null;
+  } finally {
+    isLoading.value = false;
+  }
+};
+
+watch(
+  () => route.params.id,
+  async (newId) => {
+    const id = Number(newId);
+    await loadArticle(id);
+    await runEntrance();
+  }
+);
+
+onMounted(async () => {
+  const initialId = Number(route.params.id);
+  await loadArticle(initialId);
+  await runEntrance();
+});
+
+onUnmounted(() => {
+  entranceCtx?.revert();
+});
 </script>
 
 <template>
-  <div class="max-w-4xl mx-auto space-y-6">
+  <AppPage
+    width="content"
+    title="Baca Artikel Eksklusif"
+    :subtitle="`EXAMINE // ARTICLE_ID #${route.params.id || '-'}`"
+    status-led="info"
+  >
     <!-- Navigation Back -->
-    <div class="flex items-center gap-2 text-xs font-semibold text-slate-500">
+    <template #actions>
       <button
-        class="hover:text-[#1E5FAD] flex items-center gap-1 cursor-pointer"
-        @click="router.back()"
+        type="button"
+        class="hover:text-[#1E5FAD] flex items-center gap-1.5 cursor-pointer font-mono text-xs font-bold text-slate-600 min-h-[44px] px-2"
+        @click="router.push('/materials')"
       >
         <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="15 18 9 12 15 6"/>
         </svg>
-        <span>Kembali ke Katalog Materi</span>
+        <span>&larr; Kembali ke Katalog Materi</span>
       </button>
-      <span>/</span>
-      <span class="text-slate-800">Modul #{{ materialId }}</span>
+    </template>
+
+    <template #alerts>
+      <!-- Error Banner -->
+      <div v-if="errorMessage">
+        <AppAlert
+          variant="error"
+          title="Artikel Terproteksi"
+          :message="errorMessage"
+        >
+          <div class="mt-3">
+            <AppButton variant="secondary" size="sm" @click="router.push('/materials')">
+              &larr; Kembali ke Daftar Materi
+            </AppButton>
+          </div>
+        </AppAlert>
+      </div>
+    </template>
+
+    <!-- Main Container Ref -->
+    <div ref="containerRef">
+      <!-- Structured Loading Skeleton (Mirrors Article Reader Card) -->
+      <div v-if="isLoading" class="chassis-panel rounded-3xl p-6 sm:p-10 space-y-8 corner-screws">
+        <!-- Article Header Skeleton -->
+        <div class="space-y-4 border-b border-slate-300/80 pb-6">
+          <div class="flex items-center gap-2">
+            <AppSkeleton variant="line" class="w-32 h-6 rounded-md" />
+            <AppSkeleton variant="line" class="w-20 h-4" />
+          </div>
+          <AppSkeleton variant="line" class="w-4/5 h-9" />
+          <div class="flex items-center gap-3 pt-2">
+            <AppSkeleton variant="circle" class="size-10" />
+            <div class="space-y-1.5">
+              <AppSkeleton variant="line" class="w-40 h-4" />
+              <AppSkeleton variant="line" class="w-32 h-3" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Article Content Body Skeleton -->
+        <div class="space-y-4">
+          <AppSkeleton variant="line" class="w-full h-4" />
+          <AppSkeleton variant="line" class="w-11/12 h-4" />
+          <AppSkeleton variant="line" class="w-4/5 h-4" />
+          <div class="py-2" />
+          <AppSkeleton variant="line" class="w-full h-4" />
+          <AppSkeleton variant="line" class="w-full h-4" />
+          <AppSkeleton variant="line" class="w-3/4 h-4" />
+          <div class="py-2" />
+          <AppSkeleton variant="line" class="w-11/12 h-4" />
+          <AppSkeleton variant="line" class="w-2/3 h-4" />
+        </div>
+
+        <!-- Action Bottom Skeleton -->
+        <div class="pt-6 border-t border-slate-300/80 flex flex-wrap items-center justify-between gap-4">
+          <AppSkeleton variant="line" class="w-48 h-3" />
+          <AppSkeleton variant="block" class="w-32 h-9 rounded-xl" />
+        </div>
+      </div>
+
+      <!-- Article Reader Card -->
+      <article
+        v-else-if="article"
+        class="article-detail-module chassis-panel rounded-3xl p-6 sm:p-10 space-y-8 corner-screws"
+      >
+        <!-- Article Header -->
+        <div class="space-y-4 border-b border-slate-300/80 pb-6">
+          <div class="flex flex-wrap items-center gap-2">
+            <AppBadge variant="mentor">
+              {{ article.category_name || "Materi Eksklusif Program" }}
+            </AppBadge>
+            <span class="text-xs text-slate-400">•</span>
+            <span class="text-xs text-slate-500 font-mono font-bold">
+              {{ article.read_time_minutes || 10 }} MIN BACA
+            </span>
+            <span v-if="article.program_id" class="text-xs text-slate-400">•</span>
+            <span v-if="article.program_id" class="text-xs font-mono font-bold text-emerald-600">
+              PROGRAM_ID // #{{ article.program_id }}
+            </span>
+          </div>
+
+          <h2 class="text-2xl sm:text-3xl font-extrabold text-slate-900 leading-tight">
+            {{ article.title }}
+          </h2>
+
+          <div class="flex items-center gap-3 pt-2">
+            <div class="size-10 rounded-xl bg-linear-to-b from-[#2a7bd9] to-[#1E5FAD] text-white font-mono font-bold text-sm flex items-center justify-center shadow-sm">
+              SS
+            </div>
+            <div>
+              <p class="text-xs font-bold text-slate-800">
+                {{ article.author_name || article.admin_name || "Tim Kurikulum SkyShare Academy" }}
+              </p>
+              <p class="text-[11px] text-slate-400 font-mono">
+                STATUS // VERIFIED_LEARNING_MATERIAL
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Article Content Body -->
+        <div class="prose prose-slate max-w-none text-sm text-slate-700 leading-relaxed space-y-5 font-sans whitespace-pre-line">
+          {{ article.content || article.excerpt }}
+        </div>
+
+        <!-- Action Bottom -->
+        <div class="pt-6 border-t border-slate-300/80 flex flex-wrap items-center justify-between gap-4">
+          <div class="text-xs text-slate-500 font-mono">
+            DOC // EXCLUSIVE_PROGRAM_ACCESS_OK
+          </div>
+          <div class="flex items-center gap-2">
+            <AppButton variant="secondary" size="sm" @click="router.push('/materials')">
+              Daftar Modul &rarr;
+            </AppButton>
+          </div>
+        </div>
+      </article>
     </div>
-
-    <!-- Article Reader Card -->
-    <article class="bg-white rounded-3xl border border-slate-200/80 p-6 sm:p-10 space-y-8 shadow-xs">
-      <!-- Article Header -->
-      <div class="space-y-4 border-b border-slate-100 pb-6">
-        <div class="flex flex-wrap items-center gap-2">
-          <AppBadge variant="mentor">Tech & Cloud</AppBadge>
-          <span class="text-xs text-slate-400">•</span>
-          <span class="text-xs text-slate-500 font-medium">12 menit waktu baca</span>
-          <span class="text-xs text-slate-400">•</span>
-          <span class="text-xs font-semibold text-emerald-600">Terverifikasi Member SkyShare</span>
-        </div>
-
-        <h1 class="text-2xl sm:text-3xl font-extrabold text-slate-900 leading-tight">
-          Panduan Komprehensif Arsitektur Cloud & Scalability 2026
-        </h1>
-
-        <div class="flex items-center gap-3 pt-2">
-          <div class="size-10 rounded-full bg-blue-100 text-[#1E5FAD] font-bold text-sm flex items-center justify-center">
-            SS
-          </div>
-          <div>
-            <p class="text-xs font-bold text-slate-800">Tim Kurikulum SkyShare Academy</p>
-            <p class="text-[11px] text-slate-400">Diperbarui pada 5 September 2026</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Article Content Body -->
-      <div class="prose prose-slate max-w-none text-sm text-slate-700 leading-relaxed space-y-5">
-        <p class="text-base text-slate-600 font-medium leading-relaxed">
-          Dalam lanskap rekayasa perangkat lunak modern, membangun aplikasi yang siap melayani ribuan hingga jutaan pengguna aktif secara simultan membutuhkan pemahaman mendalam tentang prinsip-prinsip <em>decoupling</em> dan <em>horizontal scalability</em>.
-        </p>
-
-        <h2 class="text-lg font-bold text-slate-800 pt-3">
-          1. Mengapa Stateless Architecture Menjadi Standar Emas?
-        </h2>
-        <p>
-          Aplikasi yang bersifat <em>stateful</em> menyimpan sesi pengguna pada memori server lokal. Ketika beban request meningkat tajam, load balancer tidak dapat mengalihkan trafik secara fleksibel ke node server lain tanpa memutuskan koneksi pengguna. Sebaliknya, dengan pendekatan <em>stateless</em> (misalnya menggunakan JWT token dengan httpOnly cookie), setiap instance server dapat melayani permintaan dari pengguna mana pun secara adil.
-        </p>
-
-        <div class="p-4 rounded-xl bg-blue-50/60 border-l-4 border-[#1E5FAD] text-xs text-slate-700 leading-relaxed">
-          <strong>Insight Arsitektur:</strong> Pada SkyShare Portal, sesi autentikasi dikelola secara stateless melalui JSON Web Tokens yang ditandatangani dan diverifikasi oleh server, memungkinkan skalabilitas tinggi untuk melayani lebih dari 5.000 user aktif secara bersamaan tanpa beban memori server berlebih.
-        </div>
-
-        <h2 class="text-lg font-bold text-slate-800 pt-3">
-          2. Manajemen Penyimpanan & CDN
-        </h2>
-        <p>
-          File statis seperti gambar booklet, video rekaman mentoring, dan berkas tugas yang diunggah oleh peserta tidak boleh disimpan langsung pada filesystem container server. Menggunakan layanan object storage terdistribusi seperti Cloudinary atau S3 bucket memastikan integritas data dan kecepatan unduh yang optimal dari berbagai lokasi geografis di Indonesia.
-        </p>
-
-        <h2 class="text-lg font-bold text-slate-800 pt-3">
-          3. Ringkasan & Checklist Implementasi
-        </h2>
-        <ul class="list-disc pl-5 space-y-1.5 text-xs text-slate-600">
-          <li>Pastikan seluruh endpoint autentikasi menggunakan token expiration dan refresh token yang aman.</li>
-          <li>Gunakan database connection pooling untuk mencegah connection exhaustion saat lonjakan trafik.</li>
-          <li>Terapkan indexing pada kolom pencarian utama seperti <code>email</code> dan <code>target_role</code>.</li>
-        </ul>
-      </div>
-
-      <!-- Action Bottom -->
-      <div class="pt-6 border-t border-slate-100 flex flex-wrap items-center justify-between gap-4">
-        <div class="text-xs text-slate-500">
-          Kamu menyukai materi ini? Bagikan feedback ke mentor.
-        </div>
-        <div class="flex items-center gap-2">
-          <AppButton variant="outline-primary" class-name="h-10 px-4 text-xs" @click="router.push('/events')">
-            Ikuti Event Terkait
-          </AppButton>
-          <AppButton variant="primary" class-name="h-10 px-4 text-xs" @click="router.push('/materials')">
-            Materi Selanjutnya
-          </AppButton>
-        </div>
-      </div>
-    </article>
-  </div>
+  </AppPage>
 </template>

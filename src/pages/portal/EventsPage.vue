@@ -1,166 +1,475 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from "vue";
 import { useRouter } from "vue-router";
+import axios from "axios";
+import { useAccessStore } from "@/stores/access";
+import { apiClient } from "@/api/client";
+import AppBadge from "@/components/common/AppBadge.vue";
 import AppButton from "@/components/common/AppButton.vue";
+import AppEmptyState from "@/components/common/AppEmptyState.vue";
+import AppAlert from "@/components/common/AppAlert.vue";
+import AppSkeleton from "@/components/common/AppSkeleton.vue";
+import AppSelect from "@/components/common/AppSelect.vue";
+import AppPage from "@/components/common/AppPage.vue";
+import type { PortalEvent } from "@/types";
 import { animatePageEntrance } from "@/utils/animations";
+import { resolveAssetUrl } from "@/utils/url";
 
+const accessStore = useAccessStore();
 const router = useRouter();
 const containerRef = ref<HTMLElement | null>(null);
 
-const selectedCategory = ref("all");
+let entranceCtx: { revert: () => void } | null = null;
+let abortController: AbortController | null = null;
 
-const events = ref([
-  {
-    id: 1,
-    title: "AI & Fullstack Engineering Intensive Bootcamp 2026",
-    category: "bootcamp",
-    type: "INTENSIVE PROGRAM",
-    date: "10 SEP - 25 OKT 2026",
-    seatsLeft: 5,
-    roleTarget: "all",
-    thumbnail: "https://images.unsplash.com/photo-1517694712202-14dd9538aa97?w=600&auto=format&fit=crop&q=80",
-    description: "Pelatihan komprehensif membangun aplikasi berbasis kecerdasan buatan dari arsitektur backend hingga antarmuka modern.",
-    hasTask: true,
-  },
-  {
-    id: 2,
-    title: "Masterclass: Cloud Architecture with High-Scalability",
-    category: "webinar",
-    type: "LIVE MASTERCLASS",
-    date: "19 SEP 2026 • 19:00 WIB",
-    seatsLeft: 24,
-    roleTarget: "talent",
-    thumbnail: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=600&auto=format&fit=crop&q=80",
-    description: "Kupas tuntas arsitektur cloud serverless, microservices, dan strategi optimasi database untuk jutaan transaksi.",
-    hasTask: false,
-  },
-  {
-    id: 3,
-    title: "SkyShare Tech Competition: Product Innovation Hackathon",
-    category: "competition",
-    type: "COMPETITION",
-    date: "1 - 15 OKT 2026",
-    seatsLeft: 12,
-    roleTarget: "all",
-    thumbnail: "https://images.unsplash.com/photo-1522071820081-009f0129c71c?w=600&auto=format&fit=crop&q=80",
-    description: "Kompetisi inovasi produk digital tingkat nasional. Dapatkan mentoring intensif dan hadiah modal pengembangan.",
-    hasTask: true,
-  },
-]);
+const events = ref<PortalEvent[]>([]);
+const isLoading = ref(true);
+const errorMessage = ref<string | null>(null);
+const warningMessage = ref<string | null>(null);
+const selectedProgramId = ref<number | "all">("all");
 
-const filteredEvents = computed(() => {
-  if (selectedCategory.value === "all") return events.value;
-  return events.value.filter((e) => e.category === selectedCategory.value);
-});
-
-const selectCategory = async (catId: string) => {
-  selectedCategory.value = catId;
-  await nextTick();
-  if (containerRef.value) {
-    animatePageEntrance(containerRef.value, ".event-card");
+// Format date into full Indonesian date-only (e.g. "Jumat, 6 November 2026")
+const formatIndonesianDate = (dateStr: string): string => {
+  if (!dateStr) return "-";
+  try {
+    // If it's a date string like "2026-11-06" or ISO
+    const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return dateStr;
+    return new Intl.DateTimeFormat("id-ID", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+      timeZone: "UTC",
+    }).format(date);
+  } catch {
+    return dateStr;
   }
 };
 
-onMounted(() => {
+// Check if an event date is in the past (before today's midnight)
+const isPastEvent = (dateStr: string): boolean => {
+  if (!dateStr) return false;
+  try {
+    const eventTime = new Date(dateStr).getTime();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return eventTime < today.getTime();
+  } catch {
+    return false;
+  }
+};
+
+// Filter & Sort events as a chronological timeline (upcoming first, past dimmed)
+const timelineEvents = computed(() => {
+  let list = [...events.value];
+  if (selectedProgramId.value !== "all") {
+    list = list.filter((e) => e.program_id === selectedProgramId.value);
+  }
+
+  // Sort: upcoming events first (ascending by date), then past events
+  return list.sort((a, b) => {
+    const isPastA = isPastEvent(a.event_date);
+    const isPastB = isPastEvent(b.event_date);
+
+    if (!isPastA && isPastB) return -1;
+    if (isPastA && !isPastB) return 1;
+
+    // Both upcoming: ascending date
+    if (!isPastA && !isPastB) {
+      return new Date(a.event_date).getTime() - new Date(b.event_date).getTime();
+    }
+
+    // Both past: descending date (most recent past first)
+    return new Date(b.event_date).getTime() - new Date(a.event_date).getTime();
+  });
+});
+
+// Load events for all active entitled programs
+const loadEvents = async () => {
+  if (abortController) {
+    abortController.abort();
+  }
+  abortController = new AbortController();
+  const signal = abortController.signal;
+
+  isLoading.value = true;
+  errorMessage.value = null;
+  warningMessage.value = null;
+
+  try {
+    if (accessStore.activePrograms.length > 0) {
+      let failedCount = 0;
+      const promises = accessStore.activePrograms.map(async (p) => {
+        try {
+          const res = await apiClient.get<{
+            status: string;
+            data: PortalEvent[];
+          }>(`/portal/programs/${p.program_id}/events`, { signal });
+          const items = res.data?.data || [];
+          return items.map((item) => ({
+            ...item,
+            program_id: item.program_id || p.program_id,
+          }));
+        } catch (subErr: any) {
+          if (axios.isCancel(subErr) || subErr.name === "CanceledError") {
+            return [] as PortalEvent[];
+          }
+          failedCount++;
+          return [] as PortalEvent[];
+        }
+      });
+
+      const results = await Promise.all(promises);
+      if (signal.aborted) return;
+
+      const allEvents = results.flat();
+
+      if (failedCount > 0) {
+        if (failedCount === accessStore.activePrograms.length) {
+          errorMessage.value = "Gagal memuat jadwal event untuk semua program cohort aktif Anda.";
+        } else {
+          warningMessage.value = `Gagal memuat jadwal event untuk ${failedCount} program cohort.`;
+        }
+      }
+
+      // Deduplicate by id
+      const uniqueMap = new Map<number, PortalEvent>();
+      for (const ev of allEvents) {
+        if (ev && ev.id) {
+          uniqueMap.set(ev.id, ev);
+        }
+      }
+      events.value = Array.from(uniqueMap.values());
+    } else {
+      events.value = [];
+    }
+  } catch (err: any) {
+    if (axios.isCancel(err) || err.name === "CanceledError") return;
+    errorMessage.value =
+      err.response?.data?.message || err.message || "Gagal memuat timeline event program.";
+  } finally {
+    if (!signal.aborted) {
+      isLoading.value = false;
+    }
+  }
+};
+
+const getProgramTitle = (programId?: number | null) => {
+  if (!programId) return "Kelas Program";
+  const found = accessStore.activePrograms.find((p) => p.program_id === programId);
+  return found?.title || `Program #${programId}`;
+};
+
+const handleProgramSelect = (event: Event) => {
+  const val = (event.target as HTMLSelectElement).value;
+  if (val === "all") {
+    selectedProgramId.value = "all";
+  } else {
+    const num = Number(val);
+    selectedProgramId.value = isNaN(num) ? "all" : num;
+  }
+};
+
+const runTimelineEntrance = async () => {
+  await nextTick();
   if (containerRef.value) {
-    animatePageEntrance(containerRef.value, ".event-card");
+    entranceCtx?.revert();
+    entranceCtx = animatePageEntrance(containerRef.value, ".timeline-node");
+  }
+};
+
+watch(selectedProgramId, async () => {
+  await runTimelineEntrance();
+});
+
+onMounted(async () => {
+  await loadEvents();
+  await runTimelineEntrance();
+});
+
+onUnmounted(() => {
+  entranceCtx?.revert();
+  if (abortController) {
+    abortController.abort();
+    abortController = null;
   }
 });
 </script>
 
 <template>
-  <div class="space-y-6">
-    <!-- Header Console -->
-    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-      <div>
-        <div class="flex items-center gap-2">
-          <span class="size-2 rounded-full bg-cyan-500 shadow-[0_0_6px_#06b6d4] animate-pulse"></span>
-          <h2 class="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight">Daftar Event & Program</h2>
-        </div>
-        <p class="font-mono text-[11px] text-slate-500 mt-1">
-          CATALOG // BOOTCAMP, WORKSHOP & HACKATHON
-        </p>
-      </div>
-
-      <!-- Filter Rocker Keys -->
-      <div class="flex items-center gap-2 p-1.5 bg-[#d7e0ec] rounded-2xl shadow-[inset_2px_2px_4px_#b5c2d3,inset_-2px_-2px_4px_#ffffff] self-start sm:self-auto border border-white/40 overflow-x-auto max-w-full">
-        <button
-          v-for="cat in [
-            { id: 'all', label: 'SEMUA' },
-            { id: 'bootcamp', label: 'BOOTCAMP' },
-            { id: 'webinar', label: 'WEBINAR' },
-            { id: 'competition', label: 'KOMPETISI' }
-          ]"
-          :key="cat.id"
-          :class="[
-            'px-3.5 py-1.5 rounded-xl font-mono text-[10px] font-bold tracking-wider transition-all cursor-pointer whitespace-nowrap',
-            selectedCategory === cat.id
-              ? 'bg-[#1E5FAD] text-white shadow-[inset_2px_2px_4px_#0f3d7a,inset_-2px_-2px_4px_#2e6fbd] translate-y-[1px]'
-              : 'bg-[#ebf0f7] text-slate-700 shadow-[2px_2px_5px_#b5c2d3,-2px_-2px_5px_#ffffff] hover:text-[#1E5FAD] active:translate-y-[1px]'
-          ]"
-          @click="selectCategory(cat.id)"
-        >
-          {{ cat.label }}
-        </button>
-      </div>
-    </div>
-
-    <!-- Event Cards Grid -->
-    <div ref="containerRef" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      <div
-        v-for="event in filteredEvents"
-        :key="event.id"
-        class="event-card bg-[#ebf0f7] rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws overflow-hidden flex flex-col justify-between transition-all duration-300 hover:-translate-y-1 hover:shadow-[8px_8px_18px_#b5c2d3,-8px_-8px_18px_#ffffff]"
+  <AppPage
+    width="content"
+    title="Agenda Sesi Kelas & Timeline Program"
+    subtitle="COHORT_AGENDA // SEQUENTIAL CLASS SESSIONS, TECHNICAL MEETINGS & GRADUATIONS"
+    status-led="info"
+  >
+    <!-- Cohort / Program Filter Dropdown -->
+    <template v-if="accessStore.activePrograms.length > 0" #actions>
+      <AppSelect
+        :model-value="selectedProgramId"
+        label="Filter Program"
+        @change="handleProgramSelect"
       >
-        <div>
-          <!-- Thumbnail screen -->
-          <div class="h-44 relative overflow-hidden bg-slate-800 m-3 rounded-2xl shadow-[inset_3px_3px_6px_rgba(0,0,0,0.5)] border border-white/40">
-            <img
-              :src="event.thumbnail"
-              :alt="event.title"
-              class="w-full h-full object-cover transition-transform duration-500 hover:scale-105"
-            />
-            <div class="absolute inset-0 crt-screen pointer-events-none opacity-25" />
-            <div class="absolute top-2.5 left-2.5 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0F172A]/80 backdrop-blur-xs text-cyan-300 font-mono text-[10px] font-bold border border-cyan-500/30">
-              <span class="size-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-              {{ event.type }}
-            </div>
+        <option value="all">Semua Kelas (Cohort)</option>
+        <option
+          v-for="prog in accessStore.activePrograms"
+          :key="prog.program_id"
+          :value="prog.program_id"
+        >
+          {{ prog.title }}
+        </option>
+      </AppSelect>
+    </template>
+
+    <!-- Error & Warning states -->
+    <template #alerts>
+      <div v-if="errorMessage">
+        <AppAlert
+          variant="error"
+          title="Gagal Memuat Agenda Sesi"
+          :message="errorMessage"
+          dismissible
+          @close="errorMessage = null"
+        />
+      </div>
+
+      <div v-if="warningMessage">
+        <AppAlert
+          variant="warning"
+          title="Pemberitahuan Sinkronisasi Sesi"
+          :message="warningMessage"
+          dismissible
+          @close="warningMessage = null"
+        />
+      </div>
+    </template>
+
+    <div ref="containerRef" class="space-y-6">
+      <!-- Loading Skeleton (Mirrors Timeline Console & Nodes) -->
+      <div v-if="isLoading" class="chassis-panel rounded-3xl p-4 sm:p-6 lg:p-8 corner-screws space-y-8 relative">
+        <div class="flex items-center justify-between pb-3 border-b border-slate-300/80">
+          <div class="flex items-center gap-2">
+            <AppSkeleton variant="circle" class="size-2.5" />
+            <AppSkeleton variant="line" class="w-64 h-4" />
           </div>
+          <AppSkeleton variant="line" class="w-28 h-3" />
+        </div>
 
-          <!-- Content Body -->
-          <div class="p-5 pt-2 space-y-3">
-            <h3 class="text-base font-bold text-slate-800 line-clamp-2 hover:text-[#1E5FAD] transition-colors">
-              {{ event.title }}
-            </h3>
+        <div class="relative pl-4 sm:pl-8 border-l-2 border-[#1E5FAD]/20 space-y-8">
+          <div v-for="i in 3" :key="i" class="relative">
+            <!-- Node Anchor Dot Skeleton -->
+            <div class="absolute -left-[23px] sm:-left-[39px] top-4 size-3.5 sm:size-4 rounded-full bg-[#d2dbe7] border border-white/50 ring-4 ring-[#ebf0f7]" />
 
-            <p class="text-xs text-slate-500 line-clamp-2 leading-relaxed font-sans">
-              {{ event.description }}
-            </p>
-
-            <div class="p-3 rounded-xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3,inset_-2px_-2px_4px_#ffffff] space-y-1.5 font-mono text-[11px] border border-white/40">
-              <div class="flex items-center justify-between text-slate-600">
-                <span>WAKTU //</span>
-                <span class="font-bold text-slate-800">{{ event.date }}</span>
+            <!-- Card Skeleton -->
+            <div class="p-4 sm:p-6 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3,inset_-2px_-2px_4px_#ffffff] border border-white/50 space-y-4">
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <AppSkeleton variant="line" class="w-16 h-5 rounded-md" />
+                  <AppSkeleton variant="line" class="w-28 h-5 rounded-md" />
+                  <AppSkeleton variant="line" class="w-24 h-5 rounded-md" />
+                </div>
+                <AppSkeleton variant="line" class="w-40 h-4" />
               </div>
-              <div class="flex items-center justify-between text-slate-600">
-                <span>KUOTA //</span>
-                <span class="font-bold text-emerald-700">SISA {{ event.seatsLeft }} KURSI</span>
+              <AppSkeleton variant="line" class="w-3/4 h-6" />
+              <div class="space-y-2">
+                <AppSkeleton variant="line" class="w-full h-4" />
+                <AppSkeleton variant="line" class="w-5/6 h-4" />
+              </div>
+              <div class="pt-2 flex items-center justify-between">
+                <AppSkeleton variant="line" class="w-32 h-4" />
+                <AppSkeleton variant="block" class="w-28 h-9 rounded-xl" />
               </div>
             </div>
           </div>
         </div>
+      </div>
 
-        <!-- Footer Actions -->
-        <div class="p-5 pt-0">
-          <AppButton
-            variant="primary"
-            class-name="w-full"
-            @click="router.push(`/events/${event.id}`)"
+      <!-- Empty State: No active program -->
+      <div v-else-if="accessStore.activePrograms.length === 0">
+        <AppEmptyState
+          title="Belum Ada Program Aktif"
+          description="Timeline sesi kelas dan technical meeting hanya terbuka bagi mentor yang telah terdaftar aktif pada program cohort. Silakan selesaikan pendaftaran program terlebih dahulu."
+          action-text="Lihat Katalog Program &rarr;"
+          @action="router.push('/programs')"
+        />
+      </div>
+
+      <!-- Empty State: Active program has no events yet -->
+      <div v-else-if="timelineEvents.length === 0">
+        <AppEmptyState
+          title="Jadwal Sesi Belum Diterbitkan"
+          description="Belum ada sesi pertemuan kelas atau pengumuman yang dijadwalkan oleh admin pada cohort ini. Silakan pantau kembali secara berkala."
+        />
+      </div>
+
+      <!-- Sequential Industrial Timeline Console -->
+      <div v-else class="chassis-panel rounded-3xl p-4 sm:p-6 lg:p-8 corner-screws space-y-8 relative">
+        <div class="flex items-center justify-between pb-3 border-b border-slate-300/80">
+          <span class="font-mono text-xs font-bold text-[#1E5FAD] uppercase tracking-wider flex items-center gap-2">
+            <span class="size-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            URUTAN SESI KELAS // PERTEMUAN 1..N & TECHNICAL MEETING
+          </span>
+          <span class="font-mono text-[10px] text-slate-500">
+            TOTAL // {{ timelineEvents.length }} SESI TERJADWAL
+          </span>
+        </div>
+
+        <!-- Connecting Timeline Spine -->
+        <div class="relative pl-4 sm:pl-8 border-l-2 border-[#1E5FAD]/40 space-y-8">
+          <div
+            v-for="(item, index) in timelineEvents"
+            :key="item.id"
+            :class="[
+              'timeline-node relative transition-all duration-200',
+              isPastEvent(item.event_date) ? 'opacity-65 grayscale-25' : ''
+            ]"
           >
-            Detail Event & Pendaftaran
-          </AppButton>
+            <!-- Mechanical Node Anchor / LED Dot -->
+            <div
+              :class="[
+                'absolute -left-[23px] sm:-left-[39px] top-4 size-3.5 sm:size-4 rounded-full ring-4 ring-[#ebf0f7] transition-all',
+                isPastEvent(item.event_date)
+                  ? 'bg-slate-400 shadow-none'
+                  : 'bg-emerald-500 shadow-[0_0_10px_#10b981]'
+              ]"
+            />
+
+            <!-- Event Chassis Card -->
+            <article class="p-4 sm:p-6 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3,inset_-2px_-2px_4px_#ffffff] border border-white/50 space-y-4">
+              <!-- Top Metadata Bar -->
+              <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <!-- Sequence Badge -->
+                  <span class="font-mono text-[10px] font-bold text-white bg-[#1E5FAD] px-2 py-0.5 rounded-md shadow-xs">
+                    SESI #{{ String(index + 1).padStart(2, '0') }}
+                  </span>
+
+                  <!-- Cohort / Program Name Tag -->
+                  <span class="font-mono text-[10px] font-bold text-[#1E5FAD] bg-blue-100/80 px-2 py-0.5 rounded-md border border-blue-200">
+                    {{ getProgramTitle(item.program_id) }}
+                  </span>
+
+                  <!-- Past vs Upcoming Indicator -->
+                  <AppBadge
+                    :variant="isPastEvent(item.event_date) ? 'neutral' : 'success'"
+                    size="sm"
+                  >
+                    {{ isPastEvent(item.event_date) ? 'SELESAI // PAST' : 'MENDATANG // UPCOMING' }}
+                  </AppBadge>
+
+                  <!-- Attendance Status Indicator -->
+                  <AppBadge
+                    v-if="item.has_attended || item.attended"
+                    variant="success"
+                    size="sm"
+                  >
+                    ✓ HADIR
+                  </AppBadge>
+                  <AppBadge
+                    v-else-if="item.attendance_is_open"
+                    variant="warning"
+                    size="sm"
+                  >
+                    <span class="size-1.5 rounded-full bg-amber-500 animate-pulse mr-1 inline-block"></span>
+                    ABSENSI DIBUKA
+                  </AppBadge>
+                </div>
+
+                <!-- Indonesian Date-Only Formatting -->
+                <div class="flex items-center gap-1.5 font-mono text-xs font-bold text-slate-800">
+                  <svg class="size-4 text-[#1E5FAD]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>
+                  </svg>
+                  <span>{{ formatIndonesianDate(item.event_date) }}</span>
+                </div>
+              </div>
+
+              <!-- Title -->
+              <h2 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight leading-snug">
+                {{ item.title }}
+              </h2>
+
+              <!-- Description (Handled gracefully if empty) -->
+              <p
+                v-if="item.description && item.description.trim() !== ''"
+                class="text-xs sm:text-sm text-slate-700 leading-relaxed font-sans"
+              >
+                {{ item.description }}
+              </p>
+              <p
+                v-else
+                class="text-xs text-slate-500 italic font-sans"
+              >
+                Sesi pendampingan kelas dan pertemuan kurikulum tatap muka cohort.
+              </p>
+
+              <!-- Documentation URLs Tray if available -->
+              <div
+                v-if="item.documentation_urls && item.documentation_urls.length > 0"
+                class="p-3 bg-white/70 rounded-xl border border-slate-300/80 space-y-2"
+              >
+                <span class="font-mono text-[10px] font-bold text-[#1E5FAD] uppercase tracking-wider flex items-center gap-1.5">
+                  <svg class="size-3.5 text-[#1E5FAD]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  DOKUMENTASI & REKAMAN SESI:
+                </span>
+
+                <div class="flex flex-wrap gap-2">
+                  <a
+                    v-for="(docUrl, docIdx) in item.documentation_urls"
+                    :key="docIdx"
+                    :href="resolveAssetUrl(docUrl)"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#ebf0f7] text-[#1E5FAD] border border-white/80 font-mono text-[10px] font-bold shadow-[2px_2px_4px_#b5c2d3] hover:brightness-105 transition-all"
+                  >
+                    <span>🔗 Berkas/Rekaman [{{ docIdx + 1 }}]</span>
+                    <span>&rarr;</span>
+                  </a>
+                </div>
+              </div>
+
+              <!-- Action Buttons: Optional CTA Link + Detail Page -->
+              <div class="pt-3 border-t border-slate-300/80 flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <!-- Optional CTA Button if cta_link is present -->
+                  <a
+                    v-if="item.cta_link"
+                    :href="item.cta_link"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="inline-block"
+                  >
+                    <AppButton variant="primary" size="sm">
+                      {{ item.cta_label || "Buka Tautan Sesi Live" }} &rarr;
+                    </AppButton>
+                  </a>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <!-- Quick Attendance OTP Action -->
+                  <RouterLink
+                    v-if="item.attendance_is_open && !item.has_attended && !item.attended"
+                    :to="`/events/${item.id}`"
+                  >
+                    <AppButton variant="primary" size="sm">
+                      📝 Isi Absen (OTP)
+                    </AppButton>
+                  </RouterLink>
+
+                  <RouterLink :to="`/events/${item.id}`">
+                    <AppButton variant="secondary" size="sm">
+                      Lihat Detail Sesi &rarr;
+                    </AppButton>
+                  </RouterLink>
+                </div>
+              </div>
+            </article>
+          </div>
         </div>
       </div>
     </div>
-  </div>
+  </AppPage>
 </template>

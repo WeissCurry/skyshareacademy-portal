@@ -1,446 +1,456 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
-import { useRouter, RouterLink } from "vue-router";
+import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
+import { RouterLink } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
+import { useAccessStore } from "@/stores/access";
 import AppBadge from "@/components/common/AppBadge.vue";
 import AppButton from "@/components/common/AppButton.vue";
-import AppEmptyState from "@/components/common/AppEmptyState.vue";
-import { animatePageEntrance, animateMascotFloat, animateCounter } from "@/utils/animations";
+import AppAlert from "@/components/common/AppAlert.vue";
+import AppSkeleton from "@/components/common/AppSkeleton.vue";
+import AppPage from "@/components/common/AppPage.vue";
+import {
+  animatePageEntrance,
+  animateMascotFloat,
+  animateCounter,
+  animateLedPulse,
+} from "@/utils/animations";
 
 const authStore = useAuthStore();
-const router = useRouter();
+const accessStore = useAccessStore();
 
 const containerRef = ref<HTMLElement | null>(null);
 const mascotBannerRef = ref<HTMLElement | null>(null);
+const kycLedRef = ref<HTMLElement | null>(null);
 
-// State simulasi: apakah user sudah mendaftar/mengikuti event
-const hasEnrolledEvents = ref(true);
+const loadError = ref<string | null>(null);
+const isRetrying = ref(false);
+const isLoading = computed(() => !accessStore.isLoaded && !loadError.value);
 
-const isMentor = computed(() => authStore.userRole === "mentor");
+// Animated counter values
+const displayActivePrograms = ref(0);
+const displayPendingOrders = ref(0);
 
-// Mock Data Event Aktif
-const activeEvent = ref({
-  id: 1,
-  title: "AI & Fullstack Engineering Bootcamp 2026",
-  batch: "BATCH 04",
-  period: "10 SEP - 25 OKT 2026",
-  category: "INTENSIVE PROGRAM",
-  progress: 35,
-  displayProgress: 0,
-  nextSession: "Sabtu, 13 September 2026 • 19:30 WIB",
-  taskDeadline: "Minggu, 14 September 2026",
-  taskStatus: "pending", // 'pending' | 'submitted' | 'reviewed'
-});
+// GSAP cleanup holders
+let entranceCtx: { revert: () => void } | null = null;
+let floatTween: any = null;
+let ledTween: any = null;
+let counterTweens: any[] = [];
 
-// Mock Submission count for Mentor
-const mentorStats = ref({
-  totalStudents: 42,
-  submittedTasks: 28,
-  pendingReview: 14,
-  reviewedTasks: 14,
-});
+const kycStatus = computed(() => accessStore.kyc?.status || "REGISTERED");
+const isApprovedKyc = computed(() => accessStore.isApprovedKyc);
+const activePrograms = computed(() => accessStore.activePrograms);
+const pendingOrders = computed(() => accessStore.pendingOrders);
 
-const displayStats = ref({
-  totalStudents: 0,
-  submittedTasks: 0,
-  pendingReview: 0,
-  reviewedTasks: 0,
-});
+const runEntranceAndCounters = async () => {
+  await nextTick();
 
-// Mock Log Aktivitas
-const activityLogs = ref([
-  {
-    id: "1",
-    title: "Akun Berhasil Diverifikasi",
-    desc: "Kamu telah menyelesaikan verifikasi OTP nomor telepon.",
-    time: "Hari ini, 08:30 WIB",
-    code: "AUTH // 200_OK",
-  },
-  {
-    id: "2",
-    title: "Login Melalui Perangkat Baru",
-    desc: "Sesi web browser di macOS (Safari).",
-    time: "Hari ini, 08:32 WIB",
-    code: "SESS // NEW_DEV",
-  },
-  {
-    id: "3",
-    title: "Mengakses Silabus Bootcamp",
-    desc: "Membaca silabus dan timeline kegiatan SkyShare Academy.",
-    time: "Kemarin, 15:40 WIB",
-    code: "DOCS // SYLLABUS",
-  },
-]);
-
-onMounted(() => {
   if (containerRef.value) {
-    animatePageEntrance(containerRef.value, ".dashboard-module");
+    entranceCtx?.revert();
+    entranceCtx = animatePageEntrance(containerRef.value, ".dashboard-module");
   }
 
   if (mascotBannerRef.value) {
-    animateMascotFloat(mascotBannerRef.value);
+    floatTween?.kill();
+    floatTween = animateMascotFloat(mascotBannerRef.value);
   }
 
-  // Ticker animation for progress bar
-  animateCounter(
-    { value: 0 },
-    activeEvent.value.progress,
-    function (this: any) {
-      activeEvent.value.displayProgress = Math.round(this.targets()[0].value);
+  // Tactile LED pulse for pending KYC states
+  if (kycLedRef.value && !isApprovedKyc.value) {
+    ledTween?.kill();
+    ledTween = animateLedPulse(kycLedRef.value);
+  }
+
+  // Clear previous counter tweens
+  counterTweens.forEach((t) => t?.kill());
+  counterTweens = [];
+
+  // Ticker animation for active programs
+  const progTarget = { value: displayActivePrograms.value };
+  const progTween = animateCounter(
+    progTarget,
+    activePrograms.value.length,
+    () => {
+      displayActivePrograms.value = Math.round(progTarget.value);
     },
     1.2
   );
+  if (progTween) counterTweens.push(progTween);
 
-  // Ticker animation for mentor stats
-  const statTargets = [
-    { key: "totalStudents", target: mentorStats.value.totalStudents },
-    { key: "submittedTasks", target: mentorStats.value.submittedTasks },
-    { key: "pendingReview", target: mentorStats.value.pendingReview },
-    { key: "reviewedTasks", target: mentorStats.value.reviewedTasks },
-  ];
+  // Ticker animation for pending orders
+  const orderTarget = { value: displayPendingOrders.value };
+  const orderTween = animateCounter(
+    orderTarget,
+    pendingOrders.value.length,
+    () => {
+      displayPendingOrders.value = Math.round(orderTarget.value);
+    },
+    1.2
+  );
+  if (orderTween) counterTweens.push(orderTween);
+};
 
-  statTargets.forEach(({ key, target }) => {
-    animateCounter(
-      { value: 0 },
-      target,
-      function (this: any) {
-        (displayStats.value as any)[key] = Math.round(this.targets()[0].value);
-      },
-      1.4
-    );
-  });
+const retryFetchAccess = async () => {
+  isRetrying.value = true;
+  loadError.value = null;
+  try {
+    await accessStore.fetchAccess();
+    await runEntranceAndCounters();
+  } catch (err: any) {
+    loadError.value =
+      err.response?.data?.message ||
+      err.message ||
+      "Gagal memuat status akses dari server.";
+  } finally {
+    isRetrying.value = false;
+  }
+};
+
+onMounted(async () => {
+  if (!accessStore.isLoaded) {
+    try {
+      await accessStore.fetchAccess();
+    } catch (err: any) {
+      loadError.value =
+        err.response?.data?.message ||
+        err.message ||
+        "Gagal memuat status akses dari server.";
+    }
+  }
+
+  await runEntranceAndCounters();
+});
+
+onUnmounted(() => {
+  entranceCtx?.revert();
+  floatTween?.kill();
+  ledTween?.kill();
+  counterTweens.forEach((t) => t?.kill());
+  counterTweens = [];
 });
 </script>
 
 <template>
-  <div ref="containerRef" class="space-y-8">
-    <!-- Header Control Console Banner -->
-    <div class="dashboard-module bg-linear-to-r from-[#174F96] via-[#1E5FAD] to-[#2E6FBD] rounded-3xl p-6 sm:p-8 text-white shadow-[8px_8px_18px_#b5c2d3,-8px_-8px_18px_#ffffff] border-t-2 border-l-2 border-white/40 border-b border-r border-[#0F3D7A] relative overflow-hidden">
-      <!-- CRT scanline effect on banner -->
-      <div class="absolute inset-0 crt-screen pointer-events-none opacity-20" />
-      <div class="absolute -right-10 -bottom-10 size-48 rounded-full bg-white/10 blur-2xl pointer-events-none" />
-
-      <div class="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div class="flex-1">
-          <div class="flex flex-wrap items-center gap-2 mb-3">
-            <span class="px-2.5 py-0.5 rounded-md font-mono text-[10px] font-bold bg-[#0F3D7A]/80 border border-white/20 text-cyan-300 tracking-wider">
-              SYS // DASHBOARD v0.1
-            </span>
-            <AppBadge :variant="isMentor ? 'mentor' : 'talent'" size="sm">
-              ROLE // {{ isMentor ? "MENTOR" : "TALENT" }}
-            </AppBadge>
-            <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-white/10 text-emerald-300">
-              <span class="size-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399] animate-pulse"></span>
-              CORE_ACTIVE
-            </span>
-          </div>
-
-          <h2 class="text-2xl sm:text-3xl font-bold tracking-tight text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.3)]">
-            Halo, {{ authStore.user?.name || "Member SkyShare" }}! 👋
-          </h2>
-          <p class="text-xs sm:text-sm text-blue-100 mt-1.5 max-w-xl leading-relaxed font-sans">
-            <span v-if="isMentor">
-              Konsol pembimbing SkyShare Academy untuk evaluasi tugas submission, pantau kemajuan talent, dan distribusikan materi.
-            </span>
-            <span v-else>
-              Selamat datang di konsol belajarmu. Akses materi terverifikasi, kumpulkan tugas event, dan pantau metrik kelulusanmu.
-            </span>
-          </p>
-
-          <!-- Simulation Rocker Switch -->
-          <div class="mt-5 inline-flex items-center gap-2.5 bg-[#0F3D7A]/70 backdrop-blur-md rounded-xl p-1.5 border border-white/20 shadow-[inset_1px_1px_3px_rgba(0,0,0,0.4)]">
-            <span class="font-mono text-[10px] font-bold text-blue-200 px-2 tracking-wider">SIMULASI:</span>
-            <button
-              type="button"
-              class="px-3 py-1.5 rounded-lg text-xs font-mono font-bold bg-[#ebf0f7] text-[#1E5FAD] hover:brightness-105 active:translate-y-[1px] active:shadow-[inset_2px_2px_4px_#b5c2d3] shadow-[2px_2px_5px_rgba(0,0,0,0.3)] transition-all cursor-pointer"
-              @click="hasEnrolledEvents = !hasEnrolledEvents"
+  <AppPage width="content">
+    <div ref="containerRef" class="space-y-6">
+      <!-- Error State if access fetch failed (P2-5) -->
+      <div v-if="loadError">
+        <AppAlert
+          variant="error"
+          title="Gagal Memuat Status Akses Mentor"
+          :message="loadError"
+        >
+          <div class="mt-3">
+            <AppButton
+              variant="secondary"
+              size="sm"
+              :loading="isRetrying"
+              @click="retryFetchAccess"
             >
-              {{ hasEnrolledEvents ? "[TERDAFTAR EVENT]" : "[BELUM TERDAFTAR (KOSONG)]" }}
-            </button>
+              Muat Ulang Status Akses
+            </AppButton>
+          </div>
+        </AppAlert>
+      </div>
+
+      <!-- Skeleton Loading State (Mirrors real dashboard hardware modules) -->
+      <div v-if="isLoading" class="space-y-6">
+        <!-- Top Welcome Banner Skeleton -->
+        <div class="chassis-panel rounded-3xl p-5 sm:p-8 corner-screws space-y-4">
+          <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
+            <div class="space-y-3 flex-1">
+              <div class="flex gap-2">
+                <AppSkeleton variant="line" class="w-24 h-6" />
+                <AppSkeleton variant="line" class="w-32 h-6" />
+              </div>
+              <AppSkeleton variant="line" class="w-3/4 h-8" />
+              <AppSkeleton variant="line" class="w-full h-4" />
+              <AppSkeleton variant="line" class="w-2/3 h-4" />
+            </div>
+            <AppSkeleton variant="circle" class="size-20 sm:size-24 self-center md:self-auto" />
           </div>
         </div>
 
-        <!-- Mascot Dynamic Display with Floating Animation -->
-        <div class="hidden sm:flex items-center justify-center shrink-0 pr-2">
-          <div ref="mascotBannerRef" class="relative p-3 rounded-2xl bg-white/10 border border-white/20 shadow-[inset_2px_2px_6px_rgba(0,0,0,0.2)]">
-            <img
-              src="/images/mascot-icons/pose=10.webp"
-              alt="SkyShare Mascot"
-              class="w-28 sm:w-36 md:w-40 h-auto object-contain drop-shadow-lg transition-transform duration-300 hover:scale-105"
-            />
+        <!-- KYC Status Panel Skeleton -->
+        <div class="chassis-panel rounded-3xl p-6 sm:p-7 corner-screws space-y-4">
+          <div class="flex items-center justify-between pb-3 border-b border-slate-300">
+            <AppSkeleton variant="line" class="w-48 h-4" />
+            <AppSkeleton variant="line" class="w-24 h-4" />
+          </div>
+          <div class="space-y-2">
+            <AppSkeleton variant="line" class="w-1/3 h-5" />
+            <AppSkeleton variant="line" class="w-full h-4" />
+          </div>
+          <AppSkeleton variant="block" class="w-48 h-10 rounded-xl" />
+        </div>
+
+        <!-- Stats Grid Skeleton -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
+          <div v-for="i in 2" :key="i" class="chassis-panel rounded-3xl p-6 corner-screws space-y-4">
+            <div class="flex justify-between items-center">
+              <AppSkeleton variant="line" class="w-36 h-4" />
+              <AppSkeleton variant="circle" class="size-6" />
+            </div>
+            <AppSkeleton variant="block" class="w-20 h-10 rounded-xl" />
+            <AppSkeleton variant="line" class="w-4/5 h-3" />
+          </div>
+        </div>
+
+        <!-- Actions Module Skeleton -->
+        <div class="chassis-panel rounded-3xl p-6 corner-screws space-y-4">
+          <AppSkeleton variant="line" class="w-40 h-4" />
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <AppSkeleton v-for="i in 3" :key="i" variant="block" class="w-full h-12 rounded-xl" />
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Case 1: USER BELUM MENDAFTAR EVENT APAPUN (Empty State + Activity Log) -->
-    <div v-if="!hasEnrolledEvents" class="space-y-6">
-      <AppEmptyState
-        title="Konsol Pembelajaran Belum Terhubung"
-        description="Akun kamu belum terdaftar di program atau event SkyShare Academy manapun. Silakan pilih event aktif untuk membuka modul tugas dan materi eksklusif."
-        action-text="Jelajahi Event & Bootcamp"
-        @action="router.push('/events')"
-      />
-
-      <!-- Activity log section when empty -->
-      <div class="bg-[#ebf0f7] rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws p-6 sm:p-8">
-        <div class="flex items-center justify-between mb-4">
-          <div>
-            <h3 class="text-base font-bold text-slate-800">Log Aktivitas & Audit Trail</h3>
-            <p class="font-mono text-[11px] text-slate-400">SYS // EVENT AUDIT & LOGIN SESSIONS</p>
-          </div>
-          <!-- Vents -->
-          <div class="flex gap-1">
-            <div class="h-4 w-1 rounded-full bg-[#b5c2d3] shadow-[inset_1px_1px_2px_rgba(0,0,0,0.3)]"></div>
-            <div class="h-4 w-1 rounded-full bg-[#b5c2d3] shadow-[inset_1px_1px_2px_rgba(0,0,0,0.3)]"></div>
-            <div class="h-4 w-1 rounded-full bg-[#b5c2d3] shadow-[inset_1px_1px_2px_rgba(0,0,0,0.3)]"></div>
-          </div>
-        </div>
-
-        <div class="space-y-3">
-          <div
-            v-for="log in activityLogs"
-            :key="log.id"
-            class="p-3.5 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_5px_#b5c2d3,inset_-2px_-2px_5px_#ffffff] flex items-start justify-between gap-4 border border-white/40"
-          >
-            <div class="flex items-start gap-3">
-              <div class="size-8 rounded-xl bg-linear-to-b from-[#2a7bd9] to-[#1E5FAD] text-white flex items-center justify-center shrink-0 mt-0.5 shadow-[2px_2px_4px_#b5c2d3]">
-                <svg class="size-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                </svg>
-              </div>
-              <div>
-                <div class="flex items-center gap-2">
-                  <p class="text-sm font-bold text-slate-800">{{ log.title }}</p>
-                  <span class="font-mono text-[10px] text-[#1E5FAD] font-bold">[{{ log.code }}]</span>
-                </div>
-                <p class="text-xs text-slate-500 mt-0.5">{{ log.desc }}</p>
-              </div>
-            </div>
-            <span class="font-mono text-[11px] text-slate-400 shrink-0">{{ log.time }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Case 2: USER SUDAH TERDAFTAR EVENT -->
-    <div v-else class="space-y-6">
-      <!-- TALENT VIEW -->
-      <div v-if="!isMentor" class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <!-- Main Event Bolted Module -->
-        <div class="dashboard-module lg:col-span-2 bg-[#ebf0f7] rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws p-6 sm:p-8 space-y-6">
-          <div class="flex items-start justify-between">
-            <div>
-              <div class="flex items-center gap-2">
-                <span class="px-2.5 py-1 rounded-md font-mono text-[10px] font-bold bg-[#d7e0ec] shadow-[inset_1px_1px_2px_#b5c2d3] text-[#1E5FAD]">
-                  {{ activeEvent.category }} // {{ activeEvent.batch }}
-                </span>
-                <span class="inline-flex items-center gap-1 text-[10px] font-mono font-bold text-emerald-600 bg-emerald-100/70 px-2 py-0.5 rounded-md">
-                  <span class="size-1.5 rounded-full bg-emerald-500 shadow-[0_0_6px_#10b981] animate-pulse"></span>
-                  LIVE_ACTIVE
-                </span>
-              </div>
-              <h3 class="text-lg sm:text-xl font-bold text-slate-800 mt-2.5 tracking-tight">
-                {{ activeEvent.title }}
-              </h3>
-              <p class="font-mono text-xs text-slate-400 mt-1">
-                TIMELINE // {{ activeEvent.period }}
-              </p>
+      <!-- Real Dashboard Modules when loaded -->
+      <div v-else class="space-y-6">
+        <!-- Top Welcome Banner Module -->
+        <section class="dashboard-module chassis-panel rounded-3xl p-5 sm:p-8 corner-screws relative overflow-hidden">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
+          <div class="space-y-3 max-w-xl">
+            <div class="flex items-center gap-2 flex-wrap">
+              <AppBadge variant="mentor">PORTAL MENTOR</AppBadge>
+              <span class="inline-flex items-center gap-1.5 font-mono text-[10px] font-bold px-2 py-0.5 rounded-md bg-[#d7e0ec] border border-white/50 text-slate-700">
+                <span
+                  :class="[
+                    'size-1.5 rounded-full',
+                    isApprovedKyc
+                      ? 'bg-emerald-500 shadow-[0_0_6px_#10b981] animate-pulse'
+                      : 'bg-amber-500 shadow-[0_0_6px_#f59e0b]'
+                  ]"
+                />
+                KYC // {{ kycStatus }}
+              </span>
             </div>
 
-            <!-- Vents -->
-            <div class="flex gap-1.5">
-              <div class="h-5 w-1 rounded-full bg-[#b5c2d3] shadow-[inset_1px_1px_2px_rgba(0,0,0,0.3)]"></div>
-              <div class="h-5 w-1 rounded-full bg-[#b5c2d3] shadow-[inset_1px_1px_2px_rgba(0,0,0,0.3)]"></div>
-              <div class="h-5 w-1 rounded-full bg-[#b5c2d3] shadow-[inset_1px_1px_2px_rgba(0,0,0,0.3)]"></div>
-            </div>
+            <h1 class="text-xl sm:text-2xl lg:text-3xl font-extrabold text-slate-900 tracking-tight break-words">
+              Selamat Datang, {{ authStore.user?.name || "Mentor SkyShare" }}!
+            </h1>
+
+            <p class="text-xs sm:text-sm text-slate-600 font-sans leading-relaxed">
+              Konsol kerja dan pembelajaran mentor resmi SkyShare Academy. Pantau status identitas legal, akses modul silabus privat, jadwal event live, dan penilaian tugas peserta.
+            </p>
           </div>
 
-          <!-- Recessed Progress Bar Slot -->
-          <div class="space-y-2 p-4 rounded-2xl bg-[#d7e0ec] shadow-[inset_3px_3px_6px_#b5c2d3,inset_-3px_-3px_6px_#ffffff] border border-white/50">
-            <div class="flex justify-between items-center font-mono text-xs font-bold text-slate-700">
-              <span>PROGRESS // PEMBELAJARAN</span>
-              <span class="text-[#1E5FAD] text-sm">{{ activeEvent.displayProgress }}%</span>
-            </div>
-            <div class="w-full h-3 bg-[#c5d2e2] rounded-full overflow-hidden shadow-[inset_1px_1px_3px_rgba(0,0,0,0.3)]">
-              <div
-                class="h-full bg-linear-to-r from-[#1E5FAD] via-[#0284C7] to-[#38BDF8] rounded-full transition-all duration-500 shadow-[0_0_8px_#38BDF8]"
-                :style="{ width: `${activeEvent.displayProgress}%` }"
+          <!-- Mascot & Quick Stat Pod -->
+          <div class="flex items-center gap-4 self-center md:self-auto shrink-0">
+            <div ref="mascotBannerRef" class="p-3 rounded-2xl bg-[#d7e0ec] shadow-[inset_3px_3px_6px_#b5c2d3,inset_-3px_-3px_6px_#ffffff] border border-white/40">
+              <img
+                src="/images/mascot-icons/pose=8.webp"
+                alt="Mascot SkyShare"
+                class="w-16 sm:w-20 h-auto object-contain drop-shadow-md"
               />
             </div>
           </div>
-
-          <!-- Upcoming Info Recessed Slots -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div class="p-4 rounded-2xl bg-[#d7e0ec] shadow-[inset_3px_3px_6px_#b5c2d3,inset_-3px_-3px_6px_#ffffff] border border-white/40">
-              <span class="font-mono text-[10px] text-slate-500 font-bold tracking-wider block">NEXT_SESSION //</span>
-              <span class="text-xs sm:text-sm font-bold text-slate-800 mt-1 block">{{ activeEvent.nextSession }}</span>
-            </div>
-            <div class="p-4 rounded-2xl bg-[#e6dbcb] shadow-[inset_3px_3px_6px_#cbbeaa,inset_-3px_-3px_6px_#ffffff] border border-white/40">
-              <span class="font-mono text-[10px] text-amber-800 font-bold tracking-wider block">DEADLINE // TUGAS 1</span>
-              <span class="text-xs sm:text-sm font-bold text-amber-950 mt-1 block">{{ activeEvent.taskDeadline }}</span>
-            </div>
-          </div>
-
-          <!-- Action Mechanical Buttons -->
-          <div class="flex flex-wrap gap-3 pt-3 border-t border-slate-300">
-            <AppButton
-              variant="primary"
-              @click="router.push(`/events/${activeEvent.id}`)"
-            >
-              Upload Tugas Event
-            </AppButton>
-            <AppButton
-              variant="secondary"
-              @click="router.push('/materials')"
-            >
-              Buka Materi & Modul
-            </AppButton>
-          </div>
         </div>
+      </section>
 
-        <!-- Right Side: Task Status & Quick Materials -->
-        <div class="space-y-6">
-          <!-- Submission status bolted panel -->
-          <div class="dashboard-module bg-[#ebf0f7] rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws p-5">
-            <div class="flex items-center justify-between mb-3">
-              <h4 class="font-mono text-xs font-bold text-[#1E5FAD] tracking-wider uppercase">SUBMISSION // STATUS</h4>
-              <span class="size-2 rounded-full bg-amber-500 shadow-[0_0_6px_#f59e0b] animate-pulse"></span>
-            </div>
-            <div class="p-4 rounded-2xl bg-[#d7e0ec] shadow-[inset_3px_3px_6px_#b5c2d3,inset_-3px_-3px_6px_#ffffff] space-y-2 border border-white/40">
-              <div class="flex items-center justify-between">
-                <span class="text-xs font-bold text-slate-800">Tugas 1: Research Flow</span>
-                <span class="font-mono text-[10px] font-bold text-amber-700 bg-amber-200/80 px-2 py-0.5 rounded-md">
-                  WAITING_UPLOAD
-                </span>
-              </div>
-              <p class="text-[11px] text-slate-500 leading-relaxed font-sans">
-                Format PDF / ZIP. Unggah sebelum batas waktu untuk mendapatkan evaluasi mentor.
-              </p>
-              <RouterLink
-                :to="`/events/${activeEvent.id}`"
-                class="font-mono text-xs font-bold text-[#1E5FAD] hover:underline inline-block mt-1"
-              >
-                KUMPULKAN SEKARANG &rarr;
-              </RouterLink>
-            </div>
+      <!-- 4 Hardware Metric HUD Cards -->
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <!-- HUD 1: KYC Status -->
+        <RouterLink
+          to="/kyc"
+          class="dashboard-module p-3.5 sm:p-4 rounded-2xl bg-[#ebf0f7] border border-white/80 shadow-[3px_3px_8px_#b5c2d3,-3px_-3px_8px_#ffffff] hover:brightness-105 transition-all block min-w-0"
+        >
+          <span class="font-mono text-[10px] text-slate-500 uppercase block">STATUS KYC</span>
+          <div class="flex items-center gap-2 mt-1">
+            <span
+              ref="kycLedRef"
+              :class="[
+                'size-2 rounded-full shrink-0',
+                isApprovedKyc
+                  ? 'bg-emerald-500 shadow-[0_0_6px_#10b981]'
+                  : kycStatus === 'REJECTED'
+                  ? 'bg-rose-500 shadow-[0_0_6px_#f43f5e]'
+                  : 'bg-amber-500 shadow-[0_0_6px_#f59e0b]'
+              ]"
+            />
+            <span class="font-mono text-xs sm:text-base font-bold text-slate-900 truncate">
+              {{ kycStatus }}
+            </span>
           </div>
+          <span class="font-mono text-[9px] text-[#1E5FAD] mt-1 block truncate">Buka Halaman KYC &rarr;</span>
+        </RouterLink>
 
-          <!-- Quick access materials bolted panel -->
-          <div class="dashboard-module bg-[#ebf0f7] rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws p-5">
-            <h4 class="font-mono text-xs font-bold text-[#1E5FAD] tracking-wider uppercase mb-3">MATERI // MODUL TERBARU</h4>
-            <div class="space-y-2.5">
-              <RouterLink
-                to="/materials/1"
-                class="block p-3 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3,inset_-2px_-2px_4px_#ffffff] hover:brightness-102 transition-all border border-white/40"
-              >
-                <span class="text-xs font-bold text-slate-800 block line-clamp-1">
-                  1. Fundamental Web Architecture & Cloud
-                </span>
-                <span class="font-mono text-[10px] text-[#1E5FAD] mt-0.5 block">READ // 15 MIN • MODUL 01</span>
-              </RouterLink>
-              <RouterLink
-                to="/materials/2"
-                class="block p-3 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3,inset_-2px_-2px_4px_#ffffff] hover:brightness-102 transition-all border border-white/40"
-              >
-                <span class="text-xs font-bold text-slate-800 block line-clamp-1">
-                  2. UI/UX Design System Guidelines
-                </span>
-                <span class="font-mono text-[10px] text-[#1E5FAD] mt-0.5 block">READ // 20 MIN • MODUL 02</span>
-              </RouterLink>
-            </div>
-          </div>
+        <!-- HUD 2: Active Programs -->
+        <RouterLink
+          to="/programs"
+          class="dashboard-module p-3.5 sm:p-4 rounded-2xl bg-[#ebf0f7] border border-white/80 shadow-[3px_3px_8px_#b5c2d3,-3px_-3px_8px_#ffffff] hover:brightness-105 transition-all block min-w-0"
+        >
+          <span class="font-mono text-[10px] text-slate-500 uppercase block">PROGRAM AKTIF</span>
+          <span class="font-mono text-xl sm:text-2xl font-bold text-slate-900 block mt-0.5">
+            {{ displayActivePrograms }}
+          </span>
+          <span class="font-mono text-[9px] text-[#1E5FAD] mt-1 block truncate">Katalog Program &rarr;</span>
+        </RouterLink>
+
+        <!-- HUD 3: Pending Orders -->
+        <RouterLink
+          to="/programs"
+          class="dashboard-module p-3.5 sm:p-4 rounded-2xl bg-[#ebf0f7] border border-white/80 shadow-[3px_3px_8px_#b5c2d3,-3px_-3px_8px_#ffffff] hover:brightness-105 transition-all block min-w-0"
+        >
+          <span class="font-mono text-[10px] text-slate-500 uppercase block">PESANAN BERJALAN</span>
+          <span class="font-mono text-xl sm:text-2xl font-bold text-amber-700 block mt-0.5">
+            {{ displayPendingOrders }}
+          </span>
+          <span class="font-mono text-[9px] text-slate-500 mt-1 block truncate">Menunggu Bayar/Review</span>
+        </RouterLink>
+
+        <!-- HUD 4: Learning Access -->
+        <div
+          class="dashboard-module p-3.5 sm:p-4 rounded-2xl bg-[#ebf0f7] border border-white/80 shadow-[3px_3px_8px_#b5c2d3,-3px_-3px_8px_#ffffff] block min-w-0"
+        >
+          <span class="font-mono text-[10px] text-slate-500 uppercase block">AKSES KONTEN</span>
+          <span
+            :class="[
+              'font-mono text-xs sm:text-sm font-bold block mt-1 truncate',
+              accessStore.hasFullAccess ? 'text-emerald-700' : 'text-amber-700'
+            ]"
+          >
+            {{ accessStore.hasFullAccess ? "PENUH (UNLOCKED)" : "TERBATAS (LOCKED)" }}
+          </span>
+          <span class="font-mono text-[9px] text-slate-400 mt-1 block">Server Verified</span>
         </div>
       </div>
 
-      <!-- MENTOR VIEW -->
-      <div v-else class="space-y-6">
-        <!-- Mentor Stats Digital Readouts -->
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-          <div class="dashboard-module bg-[#ebf0f7] p-4 sm:p-5 rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws">
-            <span class="font-mono text-[10px] text-slate-500 font-bold uppercase tracking-wider block">TOTAL TALENT</span>
-            <p class="font-mono text-2xl sm:text-3xl font-bold text-slate-800 mt-2">{{ displayStats.totalStudents }}</p>
-          </div>
-          <div class="dashboard-module bg-[#ebf0f7] p-4 sm:p-5 rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws">
-            <span class="font-mono text-[10px] text-[#1E5FAD] font-bold uppercase tracking-wider block">TUGAS MASUK</span>
-            <p class="font-mono text-2xl sm:text-3xl font-bold text-[#1E5FAD] mt-2">{{ displayStats.submittedTasks }}</p>
-          </div>
-          <div class="dashboard-module bg-[#ebf0f7] p-4 sm:p-5 rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws">
-            <span class="font-mono text-[10px] text-amber-700 font-bold uppercase tracking-wider block">PERLU REVIEW</span>
-            <p class="font-mono text-2xl sm:text-3xl font-bold text-amber-600 mt-2">{{ displayStats.pendingReview }}</p>
-          </div>
-          <div class="dashboard-module bg-[#ebf0f7] p-4 sm:p-5 rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws">
-            <span class="font-mono text-[10px] text-emerald-700 font-bold uppercase tracking-wider block">SELESAI REVIEW</span>
-            <p class="font-mono text-2xl sm:text-3xl font-bold text-emerald-600 mt-2">{{ displayStats.reviewedTasks }}</p>
-          </div>
+      <!-- Active Programs List or Onboarding Roadmap -->
+      <!-- Case A: User has active programs -->
+      <section v-if="activePrograms.length > 0" class="dashboard-module space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
+            <span class="size-2 rounded-full bg-emerald-500"></span>
+            <span>Program yang Anda Ikuti</span>
+          </h2>
+          <RouterLink to="/programs" class="font-mono text-xs font-bold text-[#1E5FAD] hover:underline">
+            LIHAT SEMUA &rarr;
+          </RouterLink>
         </div>
 
-        <!-- Mentor Management Panel -->
-        <div class="dashboard-module bg-[#ebf0f7] rounded-3xl shadow-[6px_6px_14px_#b5c2d3,-6px_-6px_14px_#ffffff] border border-white/80 corner-screws p-5 sm:p-8 space-y-5">
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="flex items-center gap-2">
-                <span class="size-2 rounded-full bg-cyan-500 shadow-[0_0_6px_#06b6d4] animate-pulse"></span>
-                <h3 class="text-base font-bold text-slate-800">Antrean Evaluasi Tugas Peserta (Talent)</h3>
-              </div>
-              <p class="font-mono text-[11px] text-slate-400 mt-0.5">QUEUE // READY FOR MENTOR REVIEW</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <article
+            v-for="prog in activePrograms"
+            :key="prog.program_id"
+            class="chassis-panel rounded-3xl p-5 sm:p-6 corner-screws space-y-4 min-w-0"
+          >
+            <div class="flex items-center justify-between">
+              <AppBadge variant="mentor" size="sm">AKTIF ENROLLED</AppBadge>
+              <span class="font-mono text-[10px] text-slate-400">ID #{{ prog.program_id }}</span>
             </div>
-            <AppButton variant="secondary" size="sm" @click="router.push('/events')">
-              Kelola Event
+
+            <h3 class="text-base font-bold text-slate-900 break-words">
+              {{ prog.title }}
+            </h3>
+
+            <p class="font-mono text-[10px] text-slate-500">
+              TERDAFTAR PADA // {{ prog.enrolled_at }}
+            </p>
+
+            <div class="pt-3 border-t border-slate-300 flex items-center gap-2 flex-wrap">
+              <RouterLink to="/materials">
+                <AppButton variant="primary" size="sm">
+                  Modul Materi
+                </AppButton>
+              </RouterLink>
+              <RouterLink to="/events">
+                <AppButton variant="secondary" size="sm">
+                  Jadwal Event
+                </AppButton>
+              </RouterLink>
+              <RouterLink to="/assignments">
+                <AppButton variant="secondary" size="sm">
+                  Tugas
+                </AppButton>
+              </RouterLink>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <!-- Case B: User has pending orders awaiting payment -->
+      <section v-else-if="pendingOrders.length > 0" class="dashboard-module p-5 sm:p-8 rounded-3xl chassis-panel corner-screws space-y-4 border-amber-300">
+        <div class="flex items-center gap-2 text-amber-900 font-bold">
+          <span class="size-2 rounded-full bg-amber-500 animate-pulse"></span>
+          <h2 class="text-base sm:text-lg">Pesanan Program Menunggu Penyelesaian</h2>
+        </div>
+
+        <p class="text-xs sm:text-sm text-slate-600 font-sans leading-relaxed">
+          Anda memiliki pesanan aktif yang belum diselesaikan. Segera lakukan transfer manual via QRIS dan unggah struk bukti transfer sebelum waktu kedaluwarsa habis.
+        </p>
+
+        <div class="pt-2">
+          <RouterLink to="/programs">
+            <AppButton variant="primary">
+              Selesaikan Pembayaran Program &rarr;
             </AppButton>
+          </RouterLink>
+        </div>
+      </section>
+
+      <!-- Case C: User is not yet active (Onboarding Steps Guide) -->
+      <section v-else class="dashboard-module chassis-panel rounded-3xl p-5 sm:p-8 corner-screws space-y-6">
+        <div>
+          <h2 class="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+            Alur Aktivasi Akun Mentor
+          </h2>
+          <p class="text-xs text-slate-500 mt-1 font-sans">
+            Ikuti tahapan onboarding di bawah ini untuk membuka akses penuh ke modul dan event.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <!-- Step 1 -->
+          <div class="p-4 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3] space-y-2 min-w-0">
+            <div class="flex justify-between items-center">
+              <span class="font-mono text-xs font-bold text-[#1E5FAD]">TAHAP 01</span>
+              <span class="font-mono text-[9px] font-bold text-slate-500">{{ kycStatus }}</span>
+            </div>
+            <h3 class="text-sm font-bold text-slate-800">Lengkapi KYC</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              Isi NIK 16 digit, rekening bank, media sosial, dan unggah foto e-KTP.
+            </p>
+            <RouterLink to="/kyc" class="block pt-1">
+              <AppButton variant="secondary" size="sm" class-name="w-full">
+                Buka KYC &rarr;
+              </AppButton>
+            </RouterLink>
           </div>
 
-          <!-- Table of submissions in recessed machine grid -->
-          <div class="overflow-x-auto rounded-2xl bg-[#d7e0ec] shadow-[inset_3px_3px_6px_#b5c2d3,inset_-3px_-3px_6px_#ffffff] p-2 border border-white/40">
-            <table class="w-full text-left text-xs">
-              <thead class="text-slate-500 font-mono text-[10px] uppercase tracking-wider font-bold border-b border-[#b5c2d3]">
-                <tr>
-                  <th class="p-3">NAMA TALENT</th>
-                  <th class="p-3">EVENT / BATCH</th>
-                  <th class="p-3">FILE TUGAS</th>
-                  <th class="p-3">WAKTU SUBMIT</th>
-                  <th class="p-3">STATUS</th>
-                  <th class="p-3 text-right">AKSI</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-slate-200/60">
-                <tr class="hover:bg-white/40 transition-colors">
-                  <td class="p-3 font-bold text-slate-800">Farhan Hidayat</td>
-                  <td class="p-3 font-mono text-slate-600">AI Bootcamp Batch 4</td>
-                  <td class="p-3 font-mono text-[#1E5FAD] font-medium underline">tugas_farhan_flow.pdf</td>
-                  <td class="p-3 font-mono text-slate-400">10 min ago</td>
-                  <td class="p-3">
-                    <span class="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
-                      WAIT_REVIEW
-                    </span>
-                  </td>
-                  <td class="p-3 text-right">
-                    <AppButton size="sm" variant="primary">
-                      Review
-                    </AppButton>
-                  </td>
-                </tr>
-                <tr class="hover:bg-white/40 transition-colors">
-                  <td class="p-3 font-bold text-slate-800">Siti Nurhaliza</td>
-                  <td class="p-3 font-mono text-slate-600">AI Bootcamp Batch 4</td>
-                  <td class="p-3 font-mono text-[#1E5FAD] font-medium underline">design_system_siti.zip</td>
-                  <td class="p-3 font-mono text-slate-400">1 hr ago</td>
-                  <td class="p-3">
-                    <span class="px-2 py-0.5 rounded-md font-mono text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                      GRADED
-                    </span>
-                  </td>
-                  <td class="p-3 text-right">
-                    <AppButton size="sm" variant="secondary">
-                      Detail
-                    </AppButton>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          <!-- Step 2 -->
+          <div class="p-4 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3] space-y-2 min-w-0">
+            <div class="flex justify-between items-center">
+              <span class="font-mono text-xs font-bold text-[#1E5FAD]">TAHAP 02</span>
+              <span class="font-mono text-[9px] font-bold text-slate-500">PROGRAM</span>
+            </div>
+            <h3 class="text-sm font-bold text-slate-800">Daftar Program</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              Pilih program bootcamp, transfer nominal QRIS dengan kode unik 3-digit.
+            </p>
+            <RouterLink to="/programs" class="block pt-1">
+              <AppButton variant="secondary" size="sm" class-name="w-full">
+                Katalog Program &rarr;
+              </AppButton>
+            </RouterLink>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="p-4 rounded-2xl bg-[#d7e0ec] shadow-[inset_2px_2px_4px_#b5c2d3] space-y-2 min-w-0">
+            <div class="flex justify-between items-center">
+              <span class="font-mono text-xs font-bold text-[#1E5FAD]">TAHAP 03</span>
+              <span class="font-mono text-[9px] font-bold text-slate-500">VERIFIKASI</span>
+            </div>
+            <h3 class="text-sm font-bold text-slate-800">Verifikasi Admin</h3>
+            <p class="text-xs text-slate-600 leading-relaxed">
+              Admin CMS memverifikasi mutasi dan data KTP Anda untuk mengaktifkan akses.
+            </p>
+            <span class="font-mono text-[10px] text-slate-400 block pt-1">
+              STATUS: MENUNGGU
+            </span>
           </div>
         </div>
+      </section>
       </div>
     </div>
-  </div>
+  </AppPage>
 </template>
