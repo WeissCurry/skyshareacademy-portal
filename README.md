@@ -240,6 +240,7 @@ skyshareacademy-portal/
          try_files $uri $uri/ /index.html;
      }
      ```
+   - **Netlify**: Netlify membaca `netlify.toml` secara otomatis. Set `VITE_API_BASE_URL` dan `VITE_GOOGLE_CLIENT_ID` di Netlify env, lalu *Clear cache and deploy*.
 
 4. **Konektivitas Cookie & CORS**:
    - Pastikan backend server menambahkan domain portal ke dalam whitelist header `Access-Control-Allow-Origin` dengan `credentials: true`.
