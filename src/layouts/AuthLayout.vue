@@ -3,13 +3,13 @@ import { RouterView } from "vue-router";
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#dce3ec] flex flex-col justify-between items-center p-4 sm:p-6 relative overflow-hidden">
+  <div class="min-h-screen bg-[#dce3ec] flex flex-col justify-between items-center p-3 sm:p-6 relative overflow-x-hidden overflow-y-auto">
     <!-- Diffuse Lighting Spotlights (Top Left Origin) -->
     <div class="absolute -top-24 -left-24 size-96 bg-white/40 rounded-full blur-3xl pointer-events-none" />
     <div class="absolute -bottom-24 -right-24 size-96 bg-[#1E5FAD]/10 rounded-full blur-3xl pointer-events-none" />
 
     <!-- Brand Header Console -->
-    <header class="w-full max-w-5xl mx-auto flex items-center justify-between py-4 relative z-10">
+    <header class="w-full max-w-5xl mx-auto flex items-center justify-between py-2 sm:py-4 relative z-10 shrink-0">
       <div class="flex items-center gap-3">
         <img
           src="/images/logo placeholder.webp"
@@ -36,15 +36,15 @@ import { RouterView } from "vue-router";
     </header>
 
     <!-- Main Container Card -->
-    <main class="w-full max-w-md my-auto py-6 relative z-10">
+    <main class="w-full my-auto py-2 sm:py-6 relative z-10 flex flex-col items-center min-w-0">
       <RouterView />
     </main>
 
     <!-- Footer Hardware Info -->
-    <footer class="w-full text-center py-4 font-mono text-[11px] text-slate-500 tracking-wider relative z-10 flex items-center justify-center gap-3">
+    <footer class="w-full text-center py-2 sm:py-4 font-mono text-[11px] text-slate-500 tracking-wider relative z-10 flex items-center justify-center gap-3 shrink-0">
       <span>&copy; 2026 SKYSHARE ACADEMY</span>
       <span class="size-1 rounded-full bg-slate-400"></span>
-      <span>SYS // SECURED WITH OTP</span>
+      <span>SYS // SECURED WITH GOOGLE OAUTH</span>
     </footer>
   </div>
 </template>
