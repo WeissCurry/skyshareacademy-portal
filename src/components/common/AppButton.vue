@@ -28,10 +28,11 @@ const props = withDefaults(defineProps<Props>(), {
   size: "md",
 });
 
+// All sizes meet or exceed the 44px minimum tap target requirement
 const sizeClasses = {
-  sm: "h-9 px-4 text-xs tracking-wider",
-  md: "h-12 px-6 text-xs sm:text-sm tracking-wider",
-  lg: "h-14 px-8 text-sm sm:text-base tracking-wider",
+  sm: "min-h-[44px] h-11 px-4 text-xs tracking-wider",
+  md: "min-h-[44px] h-12 px-6 text-xs sm:text-sm tracking-wider",
+  lg: "min-h-[48px] h-14 px-8 text-sm sm:text-base tracking-wider",
 };
 
 const variantClasses: Record<ButtonVariant, string> = {
@@ -53,7 +54,7 @@ const variantClasses: Record<ButtonVariant, string> = {
 
 const computedClass = computed(() => {
   return [
-    "rounded-xl inline-flex justify-center items-center gap-2.5 transition-all duration-150 select-none cursor-pointer uppercase font-sans",
+    "rounded-xl inline-flex justify-center items-center gap-2.5 transition-all duration-150 select-none cursor-pointer uppercase font-sans shrink-0",
     sizeClasses[props.size],
     props.disabled || props.loading
       ? "opacity-60 cursor-not-allowed pointer-events-none shadow-none"

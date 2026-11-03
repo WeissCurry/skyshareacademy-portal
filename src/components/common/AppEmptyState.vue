@@ -9,6 +9,9 @@ interface Props {
 }
 
 withDefaults(defineProps<Props>(), {
+  title: "",
+  description: "",
+  actionText: "",
   mascotSrc: "/images/mascot-icons/pose=2.webp",
 });
 

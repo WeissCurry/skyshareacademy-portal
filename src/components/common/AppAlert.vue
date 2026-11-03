@@ -12,6 +12,8 @@ interface Props {
 
 const props = withDefaults(defineProps<Props>(), {
   variant: "info",
+  title: "",
+  message: "",
   dismissible: false,
   code: undefined,
   className: "",

@@ -10,9 +10,39 @@ export interface AlertItem {
 }
 
 const activeAlerts = ref<AlertItem[]>([]);
+const alertTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const FLASH_STORAGE_KEY = "skyshare_pending_flash";
+
+export function setFlashAlert(options: Omit<AlertItem, "id">) {
+  try {
+    sessionStorage.setItem(FLASH_STORAGE_KEY, JSON.stringify(options));
+  } catch {
+    // ignore
+  }
+}
+
+export function checkAndConsumeFlashAlert(showFn: (opts: Omit<AlertItem, "id">) => string) {
+  try {
+    const raw = sessionStorage.getItem(FLASH_STORAGE_KEY);
+    if (raw) {
+      sessionStorage.removeItem(FLASH_STORAGE_KEY);
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.message) {
+        showFn(parsed);
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
 
 export function useAlert() {
   const dismiss = (id: string) => {
+    const timer = alertTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      alertTimers.delete(id);
+    }
     activeAlerts.value = activeAlerts.value.filter((a) => a.id !== id);
   };
 
@@ -27,9 +57,10 @@ export function useAlert() {
     activeAlerts.value.push(alert);
 
     if (alert.timeout && alert.timeout > 0) {
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         dismiss(id);
       }, alert.timeout);
+      alertTimers.set(id, timer);
     }
 
     return id;
@@ -51,6 +82,9 @@ export function useAlert() {
     return show({ variant: "info", title, message, code: code || "INFO // 001_SYS" });
   };
 
+  // Check if there was any flash alert from a previous navigation
+  checkAndConsumeFlashAlert(show);
+
   return {
     activeAlerts,
     show,
@@ -59,5 +93,6 @@ export function useAlert() {
     error,
     warning,
     info,
+    setFlashAlert,
   };
 }
